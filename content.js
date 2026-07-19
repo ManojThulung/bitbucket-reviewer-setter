@@ -43,8 +43,143 @@ function isReviewerListbox(listbox) {
     return !controls || controls === listbox.id;
 }
 
+// "workspace/repo" from the URL, or null
+function repoSlug() {
+    const m = location.pathname.match(/^\/([^/]+)\/([^/]+)\//);
+    return m ? `${m[1]}/${m[2]}` : null;
+}
+
+// Remember which group was last applied in this repo
+async function rememberRepoGroup(groupId) {
+    const slug = repoSlug();
+    if (!slug || !groupId) return;
+    const { repoGroups = {} } = await chrome.storage.local.get('repoGroups');
+    if (repoGroups[slug] !== groupId) {
+        repoGroups[slug] = groupId;
+        await chrome.storage.local.set({ repoGroups });
+    }
+}
+
+// Auto-select the repo's remembered group, once per visit so manual switches stick
+let lastAutoSlug = null;
+async function autoSelectRepoGroup() {
+    if (!isCreatePrPage()) { lastAutoSlug = null; return; }
+    const slug = repoSlug();
+    if (!slug || slug === lastAutoSlug) return;
+    lastAutoSlug = slug;
+    const { repoGroups = {} } = await chrome.storage.local.get('repoGroups');
+    const mapped = repoGroups[slug];
+    if (!mapped) return;
+    const { groups, activeGroupId } = await getGroupsState();
+    if (mapped !== activeGroupId && groups.some(g => g.id === mapped)) {
+        await chrome.storage.local.set({ activeGroupId: mapped });
+    }
+}
+
+// Cache group state; invalidated on any storage change
+let groupStateCache = null;
+async function getGroupsStateCached() {
+    if (!groupStateCache) groupStateCache = await getGroupsState();
+    return groupStateCache;
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || (!changes.groups && !changes.activeGroupId)) return;
+    groupStateCache = null;
+    scheduleInlineRefresh();
+});
+
+// Debounced refresh of the inline button (observer fires on every DOM change)
+let inlineTimer = null;
+function scheduleInlineRefresh() {
+    if (inlineTimer) return;
+    inlineTimer = setTimeout(() => {
+        inlineTimer = null;
+        autoSelectRepoGroup();
+        ensureInlineApplyButton();
+    }, 300);
+}
+
+// Leaf element whose text is exactly "Reviewers"
+function findReviewersLabel() {
+    return [...document.querySelectorAll('label, h2, h3, h4, span, div')]
+        .find(el => el.childElementCount === 0
+            && /^reviewers?$/i.test(el.textContent.trim())
+            && !el.closest('[role="listbox"]'));
+}
+
+// Keep an "Apply" button next to the Reviewers label on the Create PR page
+async function ensureInlineApplyButton() {
+    let btn = document.querySelector('.sr-apply-btn');
+    if (btn && !btn.isConnected) btn = null;
+    if (!isCreatePrPage()) { btn?.remove(); return; }
+
+    const label = findReviewersLabel();
+    if (!label) { btn?.remove(); return; }
+
+    if (!btn) {
+        btn = document.createElement('button');
+        btn.className = 'sr-apply-btn';
+        btn.type = 'button';
+        btn.style.cssText = `
+            margin-left: 8px;
+            padding: 4px 10px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #0052cc;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            vertical-align: middle;
+        `;
+        btn.addEventListener('click', onInlineApply);
+    }
+    if (btn.previousElementSibling !== label) label.insertAdjacentElement('afterend', btn);
+    if (btn.dataset.busy) return; // don't clobber Applying/result feedback
+
+    const { groups, activeGroupId } = await getGroupsStateCached();
+    const group = groups.find(g => g.id === activeGroupId) || groups[0];
+    btn.textContent = `Apply "${group.name}" (${group.reviewers.length})`;
+    const empty = group.reviewers.length === 0;
+    btn.disabled = empty;
+    btn.style.opacity = empty ? '0.5' : '1';
+    btn.style.cursor = empty ? 'default' : 'pointer';
+}
+
+// Apply the active group straight from the page
+async function onInlineApply() {
+    const btn = document.querySelector('.sr-apply-btn');
+    if (!btn || btn.dataset.busy) return;
+    const { groups, activeGroupId } = await getGroupsStateCached();
+    const group = groups.find(g => g.id === activeGroupId) || groups[0];
+    if (!group.reviewers.length) return;
+
+    btn.dataset.busy = '1';
+    btn.disabled = true;
+    btn.textContent = 'Applying…';
+    try {
+        await applyReviewers(group.reviewers);
+        await rememberRepoGroup(group.id);
+        btn.textContent = '✓ Applied';
+        btn.style.background = '#36b37e';
+    } catch (err) {
+        console.warn('[SR] inline apply failed:', err);
+        btn.textContent = '✗ Failed';
+        btn.title = err.message;
+        btn.style.background = '#de350b';
+    }
+    setTimeout(() => {
+        delete btn.dataset.busy;
+        btn.disabled = false;
+        btn.title = '';
+        btn.style.background = '#0052cc';
+        ensureInlineApplyButton();
+    }, 2500);
+}
+
 // Inject "+ Add" buttons when the reviewer dropdown opens
 const dropdownObserver = new MutationObserver(() => {
+    scheduleInlineRefresh();
     if (!isCreatePrPage()) return;
     document.querySelectorAll('[role="listbox"]').forEach(listbox => {
         if (listbox.dataset.srInjected || !isReviewerListbox(listbox)) return;
@@ -56,6 +191,7 @@ const dropdownObserver = new MutationObserver(() => {
     });
 });
 dropdownObserver.observe(document.body, { childList: true, subtree: true });
+scheduleInlineRefresh();
 
 function extractFromDOM(optionEl) {
     const img = optionEl.querySelector('img');
@@ -149,7 +285,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return;
     }
     applyReviewers(msg.reviewers)
-        .then(() => sendResponse({ ok: true }))
+        .then(async () => {
+            await rememberRepoGroup(msg.groupId);
+            sendResponse({ ok: true });
+        })
         .catch(err => sendResponse({ ok: false, error: err.message }));
     return true;
 });

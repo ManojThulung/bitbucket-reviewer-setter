@@ -184,6 +184,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             groups = groups.filter(g => g.id !== group.id);
             if (groups.length === 0) groups = [newGroup('Default')];
             activeGroupId = groups[0].id;
+            // Drop per-repo mappings that pointed at the deleted group
+            const { repoGroups = {} } = await chrome.storage.local.get('repoGroups');
+            const pruned = Object.fromEntries(
+                Object.entries(repoGroups).filter(([, gid]) => gid !== group.id));
+            if (Object.keys(pruned).length !== Object.keys(repoGroups).length) {
+                await chrome.storage.local.set({ repoGroups: pruned });
+            }
             await persist();
             render();
         });
@@ -206,7 +213,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusEl.textContent = 'Applying...';
         statusEl.style.color = '#5e6c84';
 
-        chrome.tabs.sendMessage(tab.id, { action: 'apply', reviewers: group.reviewers }, response => {
+        chrome.tabs.sendMessage(tab.id, { action: 'apply', reviewers: group.reviewers, groupId: group.id }, response => {
             if (chrome.runtime.lastError || !response?.ok) {
                 statusEl.textContent = response?.error
                     || 'Error: make sure you are on a Bitbucket PR page.';
