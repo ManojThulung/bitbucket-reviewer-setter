@@ -277,8 +277,14 @@ function injectAddButtons(listbox) {
     });
 }
 
-// Handle Apply from the popup; only allowed on the Create PR page
+// Handle popup messages; Apply only allowed on the Create PR page
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg.action === 'status') {
+        const chips = [...document.querySelectorAll('.-MultiValueLabel')]
+            .map(c => c.textContent.trim().toLowerCase());
+        sendResponse({ ok: true, isCreatePrPage: isCreatePrPage(), currentReviewers: chips });
+        return;
+    }
     if (msg.action !== 'apply') return;
     if (!isCreatePrPage()) {
         sendResponse({ ok: false, error: 'Open a Create Pull Request page first (URL contains /pull-requests/new).' });

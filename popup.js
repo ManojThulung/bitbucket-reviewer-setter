@@ -14,6 +14,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     let groups = [];
     let activeGroupId = null;
     let editing = false;
+    let pageStatus = { onPrPage: false, currentReviewers: [] };
+
+    // Ask the content script whether this tab is a Create PR page and who is already a reviewer
+    function refreshPageStatus() {
+        return new Promise(resolve => {
+            chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+                if (!tab?.id) { resolve(); return; }
+                chrome.tabs.sendMessage(tab.id, { action: 'status' }, response => {
+                    if (chrome.runtime.lastError || !response?.ok) {
+                        pageStatus = { onPrPage: false, currentReviewers: [] };
+                    } else {
+                        pageStatus = {
+                            onPrPage: response.isCreatePrPage,
+                            currentReviewers: response.currentReviewers || []
+                        };
+                    }
+                    resolve();
+                });
+            });
+        });
+    }
 
     const newGroup = (name, reviewers = []) =>
         ({ id: 'g' + Date.now().toString(36), name, reviewers });
@@ -98,7 +119,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         groupSelect.value = group.id;
 
-        applyBtn.disabled = group.reviewers.length === 0;
+        applyBtn.disabled = group.reviewers.length === 0 || !pageStatus.onPrPage;
+        applyBtn.title = pageStatus.onPrPage ? '' : 'Open a Create Pull Request page to apply';
+        if (!pageStatus.onPrPage) {
+            statusEl.textContent = 'Open a Create Pull Request page to apply.';
+            statusEl.style.color = '#6b778c';
+        }
 
         listEl.innerHTML = '';
         if (group.reviewers.length === 0) {
@@ -132,7 +158,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 render();
             });
 
-            item.append(avatar, name, removeBtn);
+            item.append(avatar, name);
+            if (pageStatus.currentReviewers.some(c => c.includes(reviewer.name.toLowerCase()))) {
+                const check = document.createElement('span');
+                check.className = 'on-pr';
+                check.textContent = '✓';
+                check.title = 'Already on this PR';
+                item.appendChild(check);
+            }
+            item.appendChild(removeBtn);
             listEl.appendChild(item);
         });
     }
@@ -214,16 +248,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusEl.style.color = '#5e6c84';
 
         chrome.tabs.sendMessage(tab.id, { action: 'apply', reviewers: group.reviewers, groupId: group.id }, response => {
-            if (chrome.runtime.lastError || !response?.ok) {
-                statusEl.textContent = response?.error
-                    || 'Error: make sure you are on a Bitbucket PR page.';
-                statusEl.style.color = '#de350b';
-            } else {
-                statusEl.textContent = `Done! "${group.name}" applied.`;
-                statusEl.style.color = '#36b37e';
-            }
-            applyBtn.disabled = activeGroup().reviewers.length === 0;
-            setTimeout(() => { statusEl.textContent = ''; }, 3000);
+            const ok = !chrome.runtime.lastError && response?.ok;
+            const errText = response?.error;
+            (async () => {
+                // Refresh ✓ marks and button state, then show the result on top
+                await refreshPageStatus();
+                render();
+                statusEl.textContent = ok
+                    ? `Done! "${group.name}" applied.`
+                    : (errText || 'Error: make sure you are on a Bitbucket PR page.');
+                statusEl.style.color = ok ? '#36b37e' : '#de350b';
+                setTimeout(() => { statusEl.textContent = ''; render(); }, 3000);
+            })();
         });
     });
 
@@ -235,5 +271,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!editing) render();
     });
 
+    await refreshPageStatus();
     await load();
 });
