@@ -6,45 +6,127 @@
   <style>
     * { box-sizing: border-box; }
     body {
-      width: 280px;
+      width: 300px;
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f4f5f7;
+      background: #ffffff;
       color: #172b4d;
     }
     .header {
-      padding: 12px 16px;
-      background: #0052cc;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      background: linear-gradient(135deg, #0747a6 0%, #0052cc 55%, #2684ff 100%);
       color: white;
     }
+    .header .logo {
+      width: 22px;
+      height: 22px;
+      flex-shrink: 0;
+    }
     .header h3 {
-      margin: 0 0 4px;
+      margin: 0;
       font-size: 14px;
       font-weight: 600;
     }
     .header p {
-      margin: 0;
+      margin: 2px 0 0;
       font-size: 11px;
-      opacity: 0.85;
+      opacity: 0.8;
+      line-height: 1.4;
     }
+    .field-label {
+      padding: 12px 16px 4px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #6b778c;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .group-bar {
+      display: flex;
+      gap: 6px;
+      padding: 0 16px;
+    }
+    .group-bar select {
+      flex: 1;
+      min-width: 0;
+      padding: 7px 8px;
+      border: 2px solid #dfe1e6;
+      border-radius: 3px;
+      background: #fafbfc;
+      font-size: 13px;
+      color: #172b4d;
+      outline: none;
+    }
+    .group-bar select:hover { background: #f4f5f7; }
+    .group-bar select:focus { background: white; border-color: #4c9aff; }
+    .icon-btn {
+      padding: 0 10px;
+      background: rgba(9, 30, 66, 0.04);
+      color: #42526e;
+      border: none;
+      border-radius: 3px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+    .icon-btn:hover { background: rgba(9, 30, 66, 0.08); }
+    .icon-btn.danger { background: #de350b; color: white; font-size: 12px; }
+    .icon-btn.danger:hover { background: #ff5630; }
+    .group-edit {
+      display: flex;
+      gap: 6px;
+      padding: 8px 16px 0;
+    }
+    .group-edit[hidden] { display: none; }
+    .group-edit input {
+      flex: 1;
+      min-width: 0;
+      padding: 7px 8px;
+      border: 2px solid #4c9aff;
+      border-radius: 3px;
+      font-size: 13px;
+      outline: none;
+    }
+    #saveGroupBtn { background: #0052cc; color: white; font-size: 13px; }
+    #saveGroupBtn:hover { background: #0065ff; }
+    #cancelGroupBtn { font-size: 13px; }
     #reviewer-list {
       max-height: 300px;
       overflow-y: auto;
-      background: white;
+      margin: 10px 16px 0;
+      border: 1px solid #ebecf0;
+      border-radius: 3px;
     }
+    #reviewer-list::-webkit-scrollbar { width: 6px; }
+    #reviewer-list::-webkit-scrollbar-thumb { background: #dfe1e6; border-radius: 3px; }
     .reviewer-item {
       display: flex;
       align-items: center;
-      padding: 8px 12px;
-      border-bottom: 1px solid #ebecf0;
+      padding: 7px 10px;
       gap: 10px;
     }
-    .reviewer-item img {
-      width: 28px;
-      height: 28px;
+    .reviewer-item + .reviewer-item { border-top: 1px solid #f4f5f7; }
+    .reviewer-item:hover { background: #f4f5f7; }
+    .reviewer-item img,
+    .letter-avatar {
+      width: 26px;
+      height: 26px;
       border-radius: 50%;
       background: #dfe1e6;
       flex-shrink: 0;
+    }
+    .letter-avatar {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 12px;
+      font-weight: 600;
     }
     .reviewer-item .name {
       flex: 1;
@@ -58,67 +140,86 @@
       border: none;
       color: #97a0af;
       cursor: pointer;
-      font-size: 18px;
+      font-size: 16px;
       padding: 0 2px;
       line-height: 1;
       flex-shrink: 0;
+      opacity: 0;
     }
+    .reviewer-item:hover .remove-btn { opacity: 1; }
     .remove-btn:hover { color: #de350b; }
     .empty {
-      padding: 20px 16px;
+      padding: 20px 14px;
       text-align: center;
-      color: #97a0af;
+      color: #6b778c;
       font-size: 12px;
       line-height: 1.6;
-      background: white;
+    }
+    #status {
+      font-size: 12px;
+      padding: 6px 16px 0;
+      min-height: 18px;
+      text-align: center;
     }
     .footer {
-      padding: 10px 12px;
+      padding: 12px 16px;
       display: flex;
       gap: 8px;
-      border-top: 1px solid #dfe1e6;
     }
     .btn-apply {
       flex: 1;
-      padding: 9px;
+      padding: 8px;
       background: #0052cc;
       color: white;
       border: none;
-      border-radius: 4px;
+      border-radius: 3px;
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 500;
       cursor: pointer;
     }
-    .btn-apply:hover { background: #0747a6; }
-    .btn-apply:disabled { background: #b3bac5; cursor: default; }
+    .btn-apply:hover { background: #0065ff; }
+    .btn-apply:active { background: #0747a6; }
+    .btn-apply:disabled { background: rgba(9, 30, 66, 0.04); color: #a5adba; cursor: default; }
     .btn-clear {
-      padding: 9px 12px;
-      background: #dfe1e6;
+      padding: 8px 12px;
+      background: rgba(9, 30, 66, 0.04);
       color: #42526e;
       border: none;
-      border-radius: 4px;
+      border-radius: 3px;
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 500;
       cursor: pointer;
     }
-    .btn-clear:hover { background: #c1c7d0; }
-    #status {
-      font-size: 12px;
-      padding: 4px 12px;
-      min-height: 20px;
-      text-align: center;
-    }
+    .btn-clear:hover { background: rgba(9, 30, 66, 0.08); }
+    .btn-clear.danger { background: #de350b; color: white; }
+    .btn-clear.danger:hover { background: #ff5630; }
   </style>
 </head>
 <body>
   <div class="header">
-    <h3>Bitbucket Reviewer Setter</h3>
-    <p>Open the reviewer dropdown on a PR page, then click "+ Add" next to a name.</p>
+    <svg class="logo" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path fill="#ffffff" d="M.778 1.213a.768.768 0 0 0-.768.892l3.263 19.81c.084.5.515.868 1.022.873H19.95a.772.772 0 0 0 .77-.646l3.27-20.03a.768.768 0 0 0-.768-.899zM14.52 15.53H9.522L8.17 8.466h7.561z"/>
+    </svg>
+    <div>
+      <h3>Bitbucket Reviewer Setter</h3>
+      <p>"+ Add" on a Create PR page saves into the selected group.</p>
+    </div>
+  </div>
+  <div class="field-label">Reviewer group</div>
+  <div class="group-bar">
+    <select id="groupSelect" title="Active group"></select>
+    <button class="icon-btn" id="newGroupBtn" title="New group">+</button>
+    <button class="icon-btn" id="deleteBtn" title="Delete group">🗑</button>
+  </div>
+  <div class="group-edit" id="groupEdit" hidden>
+    <input id="groupNameInput" maxlength="40" placeholder="New group name">
+    <button class="icon-btn" id="saveGroupBtn">Save</button>
+    <button class="icon-btn" id="cancelGroupBtn">Cancel</button>
   </div>
   <div id="reviewer-list"></div>
   <div id="status"></div>
   <div class="footer">
-    <button class="btn-clear" id="clearBtn">Clear All</button>
+    <button class="btn-clear" id="clearBtn">Clear group</button>
     <button class="btn-apply" id="applyBtn" disabled>Apply to PR</button>
   </div>
   <script src="popup.js"></script>

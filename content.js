@@ -15,6 +15,20 @@ function askMainWorld(eventName, payload, timeoutMs = 5000) {
     });
 }
 
+// Load groups state, migrating the old flat savedReviewers list on first run
+async function getGroupsState() {
+    const { groups, activeGroupId, savedReviewers } = await chrome.storage.local.get(['groups', 'activeGroupId', 'savedReviewers']);
+    if (Array.isArray(groups) && groups.length) {
+        const validId = groups.some(g => g.id === activeGroupId) ? activeGroupId : groups[0].id;
+        return { groups, activeGroupId: validId };
+    }
+    const def = { id: 'g' + Date.now().toString(36), name: 'Default', reviewers: savedReviewers || [] };
+    const state = { groups: [def], activeGroupId: def.id };
+    await chrome.storage.local.set(state);
+    await chrome.storage.local.remove('savedReviewers');
+    return state;
+}
+
 // True on the Create PR page (checked per-event; Bitbucket is a SPA)
 function isCreatePrPage() {
     return location.pathname.includes('/pull-requests/new');
@@ -105,13 +119,15 @@ function injectAddButtons(listbox) {
                 return;
             }
 
-            const { savedReviewers = [] } = await chrome.storage.local.get(['savedReviewers']);
-            if (!savedReviewers.find(r => r.id === reviewer.id)) {
-                savedReviewers.push(reviewer);
-                await chrome.storage.local.set({ savedReviewers });
+            // Save into the active group
+            const { groups, activeGroupId } = await getGroupsState();
+            const group = groups.find(g => g.id === activeGroupId) || groups[0];
+            if (!group.reviewers.some(r => r.id === reviewer.id)) {
+                group.reviewers.push(reviewer);
+                await chrome.storage.local.set({ groups });
             }
 
-            btn.textContent = '✓ Added';
+            btn.textContent = `✓ → ${group.name}`;
             btn.style.background = '#36b37e';
             setTimeout(() => {
                 btn.textContent = '+ Add';
