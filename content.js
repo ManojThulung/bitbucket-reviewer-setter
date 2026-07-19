@@ -15,15 +15,31 @@ function askMainWorld(eventName, payload, timeoutMs = 5000) {
     });
 }
 
+// True on the Create PR page (checked per-event; Bitbucket is a SPA)
+function isCreatePrPage() {
+    return location.pathname.includes('/pull-requests/new');
+}
+
+// True only for the Reviewers listbox, not branch/other dropdowns
+function isReviewerListbox(listbox) {
+    if (/review/i.test(listbox.id || '')) return true;
+    const active = document.activeElement;
+    if (!active || !/review/i.test(active.id || '')) return false;
+    const controls = active.getAttribute('aria-controls') || active.getAttribute('aria-owns');
+    return !controls || controls === listbox.id;
+}
+
 // Inject "+ Add" buttons when the reviewer dropdown opens
 const dropdownObserver = new MutationObserver(() => {
-    const listbox = document.querySelector('[role="listbox"]');
-    if (!listbox || listbox.dataset.srInjected) return;
-    listbox.dataset.srInjected = 'true';
-    injectAddButtons(listbox);
+    if (!isCreatePrPage()) return;
+    document.querySelectorAll('[role="listbox"]').forEach(listbox => {
+        if (listbox.dataset.srInjected || !isReviewerListbox(listbox)) return;
+        listbox.dataset.srInjected = 'true';
+        injectAddButtons(listbox);
 
-    const innerObserver = new MutationObserver(() => injectAddButtons(listbox));
-    innerObserver.observe(listbox, { childList: true, subtree: true });
+        const innerObserver = new MutationObserver(() => injectAddButtons(listbox));
+        innerObserver.observe(listbox, { childList: true, subtree: true });
+    });
 });
 dropdownObserver.observe(document.body, { childList: true, subtree: true });
 
@@ -51,6 +67,7 @@ function injectAddButtons(listbox) {
         btn.className = 'sr-add-btn';
         btn.textContent = '+ Add';
         btn.style.cssText = `
+            order: 9999;
             margin-left: auto;
             padding: 2px 10px;
             font-size: 11px;
@@ -108,14 +125,17 @@ function injectAddButtons(listbox) {
     });
 }
 
-// Handle Apply from the popup
+// Handle Apply from the popup; only allowed on the Create PR page
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg.action === 'apply') {
-        applyReviewers(msg.reviewers)
-            .then(() => sendResponse({ ok: true }))
-            .catch(err => sendResponse({ ok: false, error: err.message }));
-        return true;
+    if (msg.action !== 'apply') return;
+    if (!isCreatePrPage()) {
+        sendResponse({ ok: false, error: 'Open a Create Pull Request page first (URL contains /pull-requests/new).' });
+        return;
     }
+    applyReviewers(msg.reviewers)
+        .then(() => sendResponse({ ok: true }))
+        .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
 });
 
 async function applyReviewers(reviewers) {
