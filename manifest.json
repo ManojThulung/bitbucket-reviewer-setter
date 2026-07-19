@@ -1,14 +1,37 @@
 {
     "manifest_version": 3,
-    "name": "Bitbucket Reviwer Setter",
-    "version": "1.0",
-    "description": "Quickly swap the default Bitbucket PR review to your custome choice.",
-    "permissions": ["storage", "activeTab", "scripting"],
+    "name": "Bitbucket Reviewer Setter",
+    "version": "2.0",
+    "description": "Save reviewers from Bitbucket's own dropdown and apply them to any PR.",
+    "permissions": ["storage"],
     "host_permissions": [
         "https://bitbucket.org/*"
     ],
+    "content_scripts": [
+        {
+            "matches": ["https://bitbucket.org/*"],
+            "js": ["content.js"],
+            "run_at": "document_idle"
+        },
+        {
+            "matches": ["https://bitbucket.org/*"],
+            "js": ["main-world.js"],
+            "run_at": "document_start",
+            "world": "MAIN"
+        }
+    ],
+    "icons": {
+        "16": "icons/icon16.png",
+        "48": "icons/icon48.png",
+        "128": "icons/icon128.png"
+    },
     "action": {
         "default_popup": "popup.html",
-        "default_title": "Set Reviewer"
+        "default_title": "Set Reviewer",
+        "default_icon": {
+            "16": "icons/icon16.png",
+            "48": "icons/icon48.png",
+            "128": "icons/icon128.png"
+        }
     }
 }
