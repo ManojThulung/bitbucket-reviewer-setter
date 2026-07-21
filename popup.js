@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const nameInput = document.getElementById('groupNameInput');
     const saveGroupBtn = document.getElementById('saveGroupBtn');
     const cancelGroupBtn = document.getElementById('cancelGroupBtn');
+    const autoApplyToggle = document.getElementById('autoApplyToggle');
 
     let groups = [];
     let activeGroupId = null;
@@ -73,12 +74,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Load groups state, migrating the old flat savedReviewers list on first run
     async function load() {
-        const data = await chrome.storage.local.get(['groups', 'activeGroupId', 'savedReviewers']);
+        const data = await chrome.storage.local.get(['groups', 'activeGroupId', 'savedReviewers', 'autoApply']);
+        autoApplyToggle.checked = !!data.autoApply;
         if (Array.isArray(data.groups) && data.groups.length) {
             groups = data.groups;
             activeGroupId = groups.some(g => g.id === data.activeGroupId) ? data.activeGroupId : groups[0].id;
+            // One-time rename of the old auto-created "Default" group
+            if (groups.some(g => g.name === 'Default')) {
+                groups.forEach(g => { if (g.name === 'Default') g.name = 'My Team'; });
+                await persist();
+            }
         } else {
-            groups = [newGroup('Default', data.savedReviewers || [])];
+            groups = [newGroup('My Team', data.savedReviewers || [])];
             activeGroupId = groups[0].id;
             await chrome.storage.local.remove('savedReviewers');
             await persist();
@@ -204,6 +211,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         render();
     });
 
+    autoApplyToggle.addEventListener('change', () => {
+        chrome.storage.local.set({ autoApply: autoApplyToggle.checked });
+    });
+
     newGroupBtn.addEventListener('click', openEdit);
     saveGroupBtn.addEventListener('click', commitEdit);
     cancelGroupBtn.addEventListener('click', closeEdit);
@@ -216,7 +227,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const group = activeGroup();
         armConfirm(deleteBtn, `Delete ${group.reviewers.length}?`, async () => {
             groups = groups.filter(g => g.id !== group.id);
-            if (groups.length === 0) groups = [newGroup('Default')];
+            if (groups.length === 0) groups = [newGroup('My Team')];
             activeGroupId = groups[0].id;
             // Drop per-repo mappings that pointed at the deleted group
             const { repoGroups = {} } = await chrome.storage.local.get('repoGroups');

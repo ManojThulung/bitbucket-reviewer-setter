@@ -167,6 +167,19 @@
       min-height: 18px;
       text-align: center;
     }
+    .auto-apply-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px 0;
+      font-size: 12px;
+      color: #42526e;
+      cursor: pointer;
+    }
+    .auto-apply-row input {
+      margin: 0;
+      accent-color: #0052cc;
+    }
     .footer {
       padding: 12px 16px;
       display: flex;
@@ -224,6 +237,10 @@
   </div>
   <div id="reviewer-list"></div>
   <div id="status"></div>
+  <label class="auto-apply-row" title="When enabled, opening a Create PR page applies the active group automatically">
+    <input type="checkbox" id="autoApplyToggle">
+    <span>Auto-apply on Create PR pages</span>
+  </label>
   <div class="footer">
     <button class="btn-clear" id="clearBtn">Clear group</button>
     <button class="btn-apply" id="applyBtn" disabled>Apply to PR</button>

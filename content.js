@@ -19,10 +19,16 @@ function askMainWorld(eventName, payload, timeoutMs = 5000) {
 async function getGroupsState() {
     const { groups, activeGroupId, savedReviewers } = await chrome.storage.local.get(['groups', 'activeGroupId', 'savedReviewers']);
     if (Array.isArray(groups) && groups.length) {
+        // One-time rename of the old auto-created "Default" group
+        const stale = groups.filter(g => g.name === 'Default');
+        if (stale.length) {
+            stale.forEach(g => { g.name = 'My Team'; });
+            await chrome.storage.local.set({ groups });
+        }
         const validId = groups.some(g => g.id === activeGroupId) ? activeGroupId : groups[0].id;
         return { groups, activeGroupId: validId };
     }
-    const def = { id: 'g' + Date.now().toString(36), name: 'Default', reviewers: savedReviewers || [] };
+    const def = { id: 'g' + Date.now().toString(36), name: 'My Team', reviewers: savedReviewers || [] };
     const state = { groups: [def], activeGroupId: def.id };
     await chrome.storage.local.set(state);
     await chrome.storage.local.remove('savedReviewers');
@@ -92,11 +98,99 @@ chrome.storage.onChanged.addListener((changes, area) => {
 let inlineTimer = null;
 function scheduleInlineRefresh() {
     if (inlineTimer) return;
-    inlineTimer = setTimeout(() => {
+    inlineTimer = setTimeout(async () => {
         inlineTimer = null;
-        autoSelectRepoGroup();
-        ensureInlineApplyButton();
+        await autoSelectRepoGroup();
+        await ensureInlineApplyButton();
+        maybeAutoApply();
     }, 300);
+}
+
+// Auto-apply the active group once per Create PR page visit (opt-in, off by default)
+let autoApplyDone = false;
+async function maybeAutoApply() {
+    if (!isCreatePrPage()) { autoApplyDone = false; return; }
+    if (autoApplyDone) return;
+    const { autoApply = false } = await chrome.storage.local.get('autoApply');
+    if (!autoApply) return;
+    // Wait until the reviewer field is actually mounted
+    if (!findReviewersLabel() || !document.querySelector('input[id^="react-select-"]')) return;
+    autoApplyDone = true;
+
+    // Let Bitbucket finish mounting its default reviewers before touching them
+    setTimeout(async () => {
+        const { groups, activeGroupId } = await getGroupsState();
+        const group = groups.find(g => g.id === activeGroupId) || groups[0];
+        if (!group.reviewers.length) return;
+
+        const snapshot = [...document.querySelectorAll('.-MultiValueLabel')].map(c => c.textContent.trim());
+        const target = new Set(group.reviewers.map(r => r.name.toLowerCase()));
+        const current = new Set(snapshot.map(n => n.toLowerCase()));
+        if (target.size === current.size && [...target].every(n => current.has(n))) return;
+
+        try {
+            await applyReviewers(group.reviewers);
+            await rememberRepoGroup(group.id);
+            showToast(`Reviewers set to "${group.name}"`, snapshot);
+        } catch (err) {
+            console.warn('[SR] auto-apply failed:', err);
+            showToast(`Auto-apply failed: ${err.message}`, null);
+        }
+    }, 1200);
+}
+
+// Bitbucket-styled toast; Undo restores the pre-apply reviewer snapshot
+function showToast(message, undoSnapshot) {
+    document.querySelector('.sr-toast')?.remove();
+    const toast = document.createElement('div');
+    toast.className = 'sr-toast';
+    toast.style.cssText = `
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        z-index: 2147483647;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 14px;
+        background: #172b4d;
+        color: white;
+        border-radius: 4px;
+        font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        box-shadow: 0 8px 16px rgba(9, 30, 66, 0.25);
+    `;
+    const text = document.createElement('span');
+    text.textContent = message;
+    toast.appendChild(text);
+
+    const dismiss = setTimeout(() => toast.remove(), 10000);
+
+    if (undoSnapshot) {
+        const undo = document.createElement('button');
+        undo.textContent = 'Undo';
+        undo.style.cssText = 'background:none; border:none; color:#4c9aff; font-weight:600; font-size:13px; cursor:pointer; padding:0;';
+        undo.addEventListener('click', async () => {
+            clearTimeout(dismiss);
+            undo.remove();
+            text.textContent = 'Restoring previous reviewers…';
+            try {
+                await applyReviewers(undoSnapshot.map(name => ({ name })));
+                text.textContent = 'Previous reviewers restored.';
+            } catch (err) {
+                text.textContent = 'Restore failed: ' + err.message;
+            }
+            setTimeout(() => toast.remove(), 3000);
+        });
+        toast.appendChild(undo);
+    }
+
+    const close = document.createElement('button');
+    close.textContent = '×';
+    close.style.cssText = 'background:none; border:none; color:#97a0af; font-size:16px; cursor:pointer; padding:0; line-height:1;';
+    close.addEventListener('click', () => { clearTimeout(dismiss); toast.remove(); });
+    toast.appendChild(close);
+
+    document.body.appendChild(toast);
 }
 
 // Leaf element whose text is exactly "Reviewers"
@@ -201,8 +295,10 @@ function extractFromDOM(optionEl) {
     clone.querySelector('.sr-add-btn')?.remove();
     const name = clone.textContent.trim();
 
+    // "initials" is a shared avatar-service path, not an account id
     const match = avatarUrl.match(/atl-paas\.net\/([^/]+)\//);
-    const id = match ? decodeURIComponent(match[1]) : name;
+    const seg = match ? decodeURIComponent(match[1]) : null;
+    const id = seg && seg !== 'initials' ? seg : name;
 
     return { id, name, avatarUrl };
 }
@@ -240,14 +336,18 @@ function injectAddButtons(listbox) {
             e.stopPropagation();
             e.preventDefault();
 
-            // Prefer main-world's full API data; fall back to DOM
-            const rawData = await askMainWorld('sr-get-option-data', { idx });
+            // Read idx at click time; the closure value goes stale when the list re-renders
+            const liveIdx = Number(option.getAttribute('data-sr-idx'));
+            const rawData = await askMainWorld('sr-get-option-data', { idx: liveIdx });
             const domData = extractFromDOM(option);
 
+            // Trust API data only when it describes the user we actually clicked
+            const raw = rawData?.name && domData.name
+                && rawData.name.toLowerCase() === domData.name.toLowerCase() ? rawData : null;
             const reviewer = {
-                id: rawData?.id || domData.id,
-                name: rawData?.name || domData.name,
-                avatarUrl: rawData?.avatarUrl || domData.avatarUrl
+                id: raw?.id || domData.id,
+                name: domData.name || raw?.name,
+                avatarUrl: raw?.avatarUrl || domData.avatarUrl
             };
 
             if (!reviewer.name) {
@@ -255,16 +355,18 @@ function injectAddButtons(listbox) {
                 return;
             }
 
-            // Save into the active group
+            // Save into the active group; dedupe by id or name
             const { groups, activeGroupId } = await getGroupsState();
             const group = groups.find(g => g.id === activeGroupId) || groups[0];
-            if (!group.reviewers.some(r => r.id === reviewer.id)) {
+            const exists = group.reviewers.some(r =>
+                r.id === reviewer.id || r.name.toLowerCase() === reviewer.name.toLowerCase());
+            if (!exists) {
                 group.reviewers.push(reviewer);
                 await chrome.storage.local.set({ groups });
             }
 
-            btn.textContent = `✓ → ${group.name}`;
-            btn.style.background = '#36b37e';
+            btn.textContent = exists ? `Already in ${group.name}` : `✓ → ${group.name}`;
+            btn.style.background = exists ? '#6b778c' : '#36b37e';
             setTimeout(() => {
                 btn.textContent = '+ Add';
                 btn.style.background = '#0052cc';
