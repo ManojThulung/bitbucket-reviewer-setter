@@ -187,8 +187,10 @@ function scheduleInlineRefresh() {
     inlineTimer = setTimeout(async () => {
         inlineTimer = null;
         if (!extensionAlive()) { teardown(); return; }
-        await autoSelectRepoGroup();
-        await ensureInlineApplyButton();
+        // Each step is independent — a failure in one must not stop auto-apply running
+        try { await autoSelectRepoGroup(); } catch (e) { console.warn('[SR] repo group select failed:', e); }
+        try { await ensureInlineApplyButton(); } catch (e) { console.warn('[SR] inline button failed:', e); }
+        try { watchForReviewerReset(); } catch (e) { console.warn('[SR] reset watch failed:', e); }
         maybeAutoApply();
     }, 300);
 }
@@ -196,17 +198,113 @@ function scheduleInlineRefresh() {
 // Bitbucket's reviewer input specifically — branch selectors are react-select too
 // and mount earlier, so a generic input[id^="react-select-"] check fires far too soon.
 function findReviewerInputEl() {
-    return document.querySelector('#react-select-BitbucketPullRequestReviewers-input')
-        || [...document.querySelectorAll('input[id^="react-select-"]')].find(i => /review/i.test(i.id))
-        || null;
+    // 1. The known react-select instance id
+    const byId = document.querySelector('#react-select-BitbucketPullRequestReviewers-input');
+    if (byId) return byId;
+
+    // 2. Any react-select input whose id mentions "review"
+    const byPattern = [...document.querySelectorAll('input[id^="react-select-"]')]
+        .find(i => /review/i.test(i.id));
+    if (byPattern) return byPattern;
+
+    // 3. Structural: the text input nearest the "Reviewers" label. Bitbucket renames
+    //    these ids between releases, and without this fallback the auto-apply gate
+    //    fails silently forever while manual apply (which has its own finder) works.
+    const label = findReviewersLabel();
+    if (label) {
+        let el = label.parentElement;
+        for (let i = 0; i < 6 && el; i++) {
+            const cand = el.querySelector(
+                'input[role="combobox"], input[id^="react-select-"], input[type="text"], input:not([type])');
+            if (cand) return cand;
+            el = el.parentElement;
+        }
+    }
+    return null;
 }
 
 // Auto-apply the active group once per Create PR page visit (opt-in, off by default).
 // State is claimed synchronously so overlapping observer ticks can't double-apply.
 const AUTO_APPLY_MAX_ATTEMPTS = 3;
+const MAX_REAPPLIES = 4;
 let autoApplyState = 'idle'; // idle | running | done
 let autoApplyAttempts = 0;
 let autoApplyPref = null;    // cached setting; null = not read yet
+let appliedNames = null;     // what we last successfully applied
+let reapplies = 0;
+let lastDestSig = null;
+let gateLoggedAt = 0;
+
+// A stable fingerprint of the current reviewer chips
+function chipSignature() {
+    return chipLabels().map(c => normName(c.textContent)).filter(Boolean).sort();
+}
+
+// Target branch, read from the URL Bitbucket keeps in sync with the form
+function destSignature() {
+    const p = new URLSearchParams(location.search);
+    return p.get('dest') || p.get('destination') || p.get('targetBranch') || '';
+}
+
+// Wait until the chips stop changing. Bitbucket loads its default reviewers for the
+// target branch asynchronously, and applying before that lands means its defaults
+// arrive on top of ours — which looks exactly like auto-apply never ran.
+// minMs matters: an empty field goes "quiet" instantly, but empty usually means
+// Bitbucket simply hasn't fetched its defaults yet — applying then puts our reviewers
+// underneath the defaults that arrive a moment later.
+async function waitForChipsToSettle(quietMs = 900, maxMs = 9000, minMs = 2500) {
+    const start = Date.now();
+    let last = null;
+    let stableSince = start;
+    while (Date.now() - start < maxMs) {
+        const sig = chipSignature().join('|');
+        if (sig !== last) {
+            last = sig;
+            stableSince = Date.now();
+        } else if (Date.now() - stableSince >= quietMs && Date.now() - start >= minMs) {
+            return;
+        }
+        await delay(150);
+    }
+    console.info('[SR] reviewer list never settled; applying anyway');
+}
+
+// Re-arm auto-apply when Bitbucket resets the reviewers: switching the target branch
+// repopulates its own defaults, and late-loading defaults can land after we applied.
+function watchForReviewerReset() {
+    if (!isCreatePrPage()) {
+        lastDestSig = null;
+        reapplies = 0;
+        appliedNames = null;
+        return;
+    }
+    if (!autoApplyPref || applying) return;
+
+    const dest = destSignature();
+    if (lastDestSig === null) {
+        lastDestSig = dest;
+    } else if (dest !== lastDestSig) {
+        lastDestSig = dest;
+        rearmAutoApply('target branch changed');
+        return;
+    }
+
+    // Someone we did not add showed up — that's Bitbucket repopulating its defaults
+    if (autoApplyState === 'done' && appliedNames) {
+        const foreign = chipSignature().some(n => !appliedNames.includes(n));
+        if (foreign) rearmAutoApply('reviewers were reset');
+    }
+}
+
+function rearmAutoApply(why) {
+    if (reapplies >= MAX_REAPPLIES) return;
+    reapplies++;
+    console.info(`[SR] ${why} — re-applying reviewers (${reapplies}/${MAX_REAPPLIES})`);
+    autoApplyState = 'idle';
+    autoApplyAttempts = 0;
+    appliedNames = null;
+    scheduleInlineRefresh();
+}
 
 async function maybeAutoApply() {
     if (!isCreatePrPage()) {
@@ -215,24 +313,32 @@ async function maybeAutoApply() {
         return;
     }
     if (autoApplyState !== 'idle') return;
-    // Both checks must be synchronous — claiming the lock after an await races
-    if (!findReviewersLabel() || !findReviewerInputEl()) return;
-    autoApplyState = 'running';
+    // null = preference not read yet (primed at startup); false = switched off
+    if (autoApplyPref !== true) return;
 
-    if (autoApplyPref === null) {
-        const data = await storage.get('autoApply');
-        if (!data) { autoApplyState = 'idle'; return; }
-        autoApplyPref = !!data.autoApply;
+    // The field counts as ready if the label is there and we can find either the input
+    // or existing chips — main-world has its own input finder, so a miss here must not
+    // block us. All checks stay synchronous: claiming the lock after an await races.
+    const label = findReviewersLabel();
+    const input = findReviewerInputEl();
+    const chips = chipLabels().length;
+    if (!label || (!input && !chips)) {
+        // Never fail silently — a blocked gate used to be invisible
+        if (Date.now() - gateLoggedAt > 10000) {
+            gateLoggedAt = Date.now();
+            console.info(`[SR] auto-apply waiting for the reviewers field — label=${!!label} input=${!!input} chips=${chips}`);
+        }
+        return;
     }
-    // 'done' rather than 'idle' so we stop re-checking every tick; the storage
-    // listener re-arms this the moment the toggle is switched on.
-    if (!autoApplyPref) { autoApplyState = 'done'; return; }
+    autoApplyState = 'running';
 
     autoApplyAttempts++;
     console.info(`[SR] auto-apply: reviewer field ready, attempt ${autoApplyAttempts}`);
 
-    // Let Bitbucket finish mounting its default reviewers before touching them
-    setTimeout(async () => {
+    // Let Bitbucket finish loading its own default reviewers before touching them
+    (async () => {
+        await waitForChipsToSettle();
+
         const state = await getGroupsState();
         if (!state) { autoApplyState = 'done'; return; }
         const group = state.groups.find(g => g.id === state.activeGroupId) || state.groups[0];
@@ -242,11 +348,12 @@ async function maybeAutoApply() {
             return;
         }
 
-        const snapshot = [...document.querySelectorAll(CHIP_SELECTOR)].map(c => c.textContent.trim());
-        const target = new Set(group.reviewers.map(r => r.name.toLowerCase()));
-        const current = new Set(snapshot.map(n => n.toLowerCase()));
-        if (target.size === current.size && [...target].every(n => current.has(n))) {
+        const snapshot = chipLabels().map(c => c.textContent.trim());
+        const target = group.reviewers.map(r => normName(r.name)).sort();
+        const current = chipSignature();
+        if (target.length === current.length && target.every((n, i) => n === current[i])) {
             console.info('[SR] auto-apply: reviewers already match, nothing to do');
+            appliedNames = target;
             autoApplyState = 'done';
             return;
         }
@@ -254,6 +361,10 @@ async function maybeAutoApply() {
         try {
             await applyReviewers(group.reviewers);
             await rememberRepoGroup(group.id);
+            // Record what we INTENDED, not the field afterwards: Bitbucket can add its
+            // defaults while we're applying, and capturing those would make the reset
+            // watcher treat them as ours and never notice the clobber.
+            appliedNames = target;
             autoApplyState = 'done';
             showToast(`Reviewers set to "${group.name}"`, snapshot);
         } catch (err) {
@@ -268,7 +379,7 @@ async function maybeAutoApply() {
                 showToast(`Auto-apply failed: ${err.message}`, null);
             }
         }
-    }, 1200);
+    })();
 }
 
 // Bitbucket-styled toast; Undo restores the pre-apply reviewer snapshot
@@ -478,6 +589,15 @@ const dropdownObserver = new MutationObserver(() => {
 });
 dropdownObserver.observe(document.body, { childList: true, subtree: true });
 observers.push(dropdownObserver);
+
+// Prime the auto-apply preference up front so maybeAutoApply can check it
+// synchronously, instead of claiming its lock and then awaiting storage.
+storage.get('autoApply').then(data => {
+    if (data) autoApplyPref = !!data.autoApply;
+    console.info(`[SR] loaded — auto-apply is ${autoApplyPref ? 'ON' : 'off'}`);
+    scheduleInlineRefresh();
+});
+
 scheduleInlineRefresh();
 
 function extractFromDOM(optionEl) {
