@@ -15,8 +15,24 @@ function askMainWorld(eventName, payload, timeoutMs = 5000) {
     });
 }
 
-// Reloading the extension orphans this script: chrome.* still exists but every call
-// throws "Extension context invalidated". Detect that and shut down instead of spamming errors.
+const CHIP_SELECTOR = [
+    '[data-tag-text="true"]',
+    '[class*="MultiValueLabel"]',
+    '[class*="multiValueLabel"]',
+    '[class*="multi-value__label"]'
+].join(', ');
+
+const CHIP_REMOVE_SELECTOR = [
+    'button[aria-label^="Remove" i]',
+    '[aria-label^="Remove" i]',
+    '[class*="MultiValueRemove"]',
+    '[class*="multiValueRemove"]',
+    '[class*="multi-value__remove"]'
+].join(', ');
+
+
+let applying = false;
+
 const observers = [];
 let dead = false;
 
@@ -226,7 +242,7 @@ async function maybeAutoApply() {
             return;
         }
 
-        const snapshot = [...document.querySelectorAll('.-MultiValueLabel')].map(c => c.textContent.trim());
+        const snapshot = [...document.querySelectorAll(CHIP_SELECTOR)].map(c => c.textContent.trim());
         const target = new Set(group.reviewers.map(r => r.name.toLowerCase()));
         const current = new Set(snapshot.map(n => n.toLowerCase()));
         if (target.size === current.size && [...target].every(n => current.has(n))) {
@@ -431,17 +447,32 @@ async function onInlineApply() {
 }
 
 // Inject "+ Add" buttons when the reviewer dropdown opens
+// React recreates the listbox on every open, so observers must be released when
+// their listbox detaches — otherwise they pile up and each one re-scans on every mutation.
+const listboxObservers = new Map();
+
+function pruneListboxObservers() {
+    for (const [listbox, obs] of listboxObservers) {
+        if (!listbox.isConnected) {
+            obs.disconnect();
+            listboxObservers.delete(listbox);
+        }
+    }
+}
+
 const dropdownObserver = new MutationObserver(() => {
     if (!extensionAlive()) { teardown(); return; }
     scheduleInlineRefresh();
-    if (!isCreatePrPage()) return;
+    // Stay out of the way while we're driving the field ourselves
+    if (!isCreatePrPage() || applying) return;
+    pruneListboxObservers();
     document.querySelectorAll('[role="listbox"]').forEach(listbox => {
-        if (listbox.dataset.srInjected || !isReviewerListbox(listbox)) return;
-        listbox.dataset.srInjected = 'true';
+        if (listboxObservers.has(listbox) || !isReviewerListbox(listbox)) return;
         injectAddButtons(listbox);
 
         const innerObserver = new MutationObserver(() => injectAddButtons(listbox));
         innerObserver.observe(listbox, { childList: true, subtree: true });
+        listboxObservers.set(listbox, innerObserver);
         observers.push(innerObserver);
     });
 });
@@ -466,6 +497,7 @@ function extractFromDOM(optionEl) {
 }
 
 function injectAddButtons(listbox) {
+    if (applying || !listbox.isConnected) return;
     listbox.querySelectorAll('[role="option"]').forEach((option, idx) => {
         // Refresh idx every pass; the option list changes as the user types
         option.setAttribute('data-sr-idx', idx);
@@ -549,7 +581,7 @@ function injectAddButtons(listbox) {
 // Handle popup messages; Apply only allowed on the Create PR page
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.action === 'status') {
-        const chips = [...document.querySelectorAll('.-MultiValueLabel')]
+        const chips = [...document.querySelectorAll(CHIP_SELECTOR)]
             .map(c => c.textContent.trim().toLowerCase());
         sendResponse({ ok: true, isCreatePrPage: isCreatePrPage(), currentReviewers: chips });
         return;
@@ -569,38 +601,165 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 async function applyReviewers(reviewers) {
-    // Add first so the input stays mounted
-    const results = [];
-    for (const reviewer of reviewers) {
-        const ok = await addReviewer(reviewer);
-        results.push({ name: reviewer.name, ok });
-    }
+    // Suspend our own DOM injection for the duration; see the `applying` comment above
+    applying = true;
+    document.querySelectorAll('.sr-add-btn').forEach(b => b.remove());
+    const t0 = Date.now();
+    try {
+        // Clear the field FIRST. react-select hides already-selected people from its
+        // search results, so anything left behind can never be re-selected — we'd wait
+        // out the full timeout for an option that cannot render.
+        await removeAllReviewers();
 
-    const failed = results.filter(r => !r.ok).map(r => r.name);
+        for (const reviewer of reviewers) {
+            await addReviewer(reviewer);
+        }
 
-    // Only remove defaults if every saved reviewer was added
-    if (failed.length === 0) {
-        await removeUnwantedReviewers(reviewers);
-    } else {
-        throw new Error(`Could not add: ${failed.join(', ')}. Existing reviewers were left untouched.`);
+        // Judge success by what is actually in the field, not by each add's return
+        // value: an add can time out after it already landed, and a reviewer who was
+        // present all along may be skipped without us having detected it.
+        const failed = [...new Set(reviewers.filter(r => !isInField(r.name)).map(r => r.name))];
+        console.info(`[SR] apply: ${reviewers.length - failed.length}/${reviewers.length} in field after ${Date.now() - t0}ms`);
+
+        if (failed.length) {
+            throw new Error(`Could not add: ${failed.join(', ')}. Try again — the rest were applied.`);
+        }
+    } finally {
+        applying = false;
     }
 }
 
-async function removeUnwantedReviewers(savedReviewers) {
-    const savedNames = new Set(savedReviewers.map(r => r.name.toLowerCase()));
-    const removeBtns = [...document.querySelectorAll('.-MultiValueRemove')];
-    for (const btn of removeBtns) {
-        const label = (btn.getAttribute('aria-label') || '').replace(/, remove$/i, '').toLowerCase();
-        if (!savedNames.has(label)) {
-            btn.click();
-            await delay(100);
+const normName = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+// Whole-name match: a chip may carry extra text, but a loose substring test would
+// treat "John" as present when only "Johnathan" is.
+function textHasName(text, name) {
+    const t = normName(text);
+    const n = normName(name);
+    if (!n) return false;
+    if (t === n) return true;
+    const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|\\s)${esc}(\\s|,|$)`).test(t);
+}
+
+// Is this reviewer currently a chip in the Reviewers field?
+function isInField(name) {
+    return chipLabels().some(c => textHasName(c.textContent, name));
+}
+
+// Nearest ancestor of the reviewer input that also holds the chips, so tags belonging
+// to other fields on the page can never be mistaken for reviewers.
+function reviewersFieldRoot() {
+    const input = findReviewerInputEl();
+    if (!input) return document;
+    let el = input.parentElement;
+    for (let i = 0; i < 8 && el; i++) {
+        if (el.querySelector(CHIP_SELECTOR)) return el;
+        el = el.parentElement;
+    }
+    return document;
+}
+
+// Every chip label currently in the Reviewers field
+function chipLabels() {
+    return [...reviewersFieldRoot().querySelectorAll(CHIP_SELECTOR)];
+}
+
+// The clickable "×" for a chip. Class names change between Bitbucket releases, so
+// fall back to structure: any button/role=button, or an element labelled "remove".
+function findRemoveControl(label) {
+    const container = label.closest('[class*="MultiValue"], [class*="multi-value"]')
+        || label.parentElement;
+    if (!container) return null;
+    const scopes = [container, container.parentElement].filter(Boolean);
+    for (const scope of scopes) {
+        const direct = scope.querySelector(CHIP_REMOVE_SELECTOR);
+        if (direct) return direct;
+        const labelled = [...scope.querySelectorAll('[aria-label]')]
+            .find(el => /remove|clear|delete/i.test(el.getAttribute('aria-label')));
+        if (labelled) return labelled;
+        const button = scope.querySelector('button, [role="button"]');
+        if (button && !button.contains(label)) return button;
+    }
+    return null;
+}
+
+// Wait for the chip count to actually drop. A fixed delay is not safe here: React can
+// take well over 100ms to re-render a long reviewer list on a busy page, and treating
+// that as "the click did nothing" aborts the whole clear.
+async function waitForChipDrop(from, timeoutMs = 2500) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        await delay(80);
+        if (chipLabels().length < from) return true;
+    }
+    return false;
+}
+
+// react-select removes the last selected value on Backspace when the input is empty.
+// Class-name independent, so it works even when the markup changes underneath us.
+async function clearWithBackspace() {
+    const input = findReviewerInputEl();
+    if (!input) return;
+    let stalls = 0;
+    for (let i = 0; i < 60 && chipLabels().length; i++) {
+        const before = chipLabels().length;
+        input.focus();
+        for (const type of ['keydown', 'keyup']) {
+            input.dispatchEvent(new KeyboardEvent(type, {
+                bubbles: true, cancelable: true,
+                key: 'Backspace', code: 'Backspace', keyCode: 8, which: 8
+            }));
         }
+        if (await waitForChipDrop(before, 1200)) stalls = 0;
+        else if (++stalls >= 3) return;   // genuinely not working
+    }
+}
+
+// Clear the whole Reviewers field before adding: react-select hides already-selected
+// people from search, so anything left behind can never be re-selected as an option.
+async function removeAllReviewers() {
+    const started = chipLabels().length;
+    if (!started) {
+        // Log rather than return silently: "no chips" and "chip selectors don't match
+        // this markup" look identical from here, and the latter is a real bug.
+        console.info('[SR] no existing reviewer chips detected — nothing to clear');
+        return;
+    }
+
+    let stalls = 0;
+    // Generous guard: one pass per chip, plus room for retries
+    for (let guard = 0; guard < started * 3 + 10; guard++) {
+        const labels = chipLabels();
+        if (!labels.length) break;
+
+        // On a stall, try a different chip — one uncooperative button shouldn't
+        // block the rest of the list.
+        const label = labels[Math.min(stalls, labels.length - 1)];
+        const btn = findRemoveControl(label);
+        if (!btn) break;                          // fall through to the keyboard path
+
+        btn.click();
+        if (await waitForChipDrop(labels.length)) {
+            stalls = 0;
+        } else if (++stalls >= 3) {
+            break;                                // clicking isn't landing; try Backspace
+        }
+    }
+
+    if (chipLabels().length) await clearWithBackspace();
+
+    const left = chipLabels().length;
+    if (left) {
+        console.warn(`[SR] could not clear ${left} of ${started} reviewers — remove control not responding`);
+    } else {
+        console.info(`[SR] cleared ${started} existing reviewer(s)`);
     }
 }
 
 async function addReviewer(reviewer) {
-    // Outlast main-world's 6s dropdown timeout
-    const result = await askMainWorld('sr-add-reviewer', { reviewer }, 8000);
+    // Outlast main-world's 10s dropdown timeout
+    const result = await askMainWorld('sr-add-reviewer', { reviewer }, 13000);
     if (!result?.ok) {
         console.warn('[SR] addReviewer failed:', reviewer.name, result);
     }
