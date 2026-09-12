@@ -1056,6 +1056,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return true;
 });
 
+async function waitForReviewersToAppear(reviewers, timeoutMs = 8000) {
+  if (!reviewers.length) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (reviewers.every((r) => isInField(r.name))) return;
+    await delay(250);
+  }
+  console.info(
+    "[SR] some reviewers had not appeared before the check timed out"
+  );
+}
+
 async function applyReviewers(reviewers) {
   // Suspend our own DOM injection for the duration; see the `applying` comment above
   applying = true;
@@ -1070,6 +1082,11 @@ async function applyReviewers(reviewers) {
     for (const reviewer of reviewers) {
       await addReviewer(reviewer);
     }
+
+    // On an open PR each add is a server round-trip and its sidebar row only appears
+    // once Bitbucket responds, so the field lags behind the last add. Let it catch up
+    // before judging, or correctly-applied reviewers get reported as failures.
+    await waitForReviewersToAppear(reviewers);
 
     // Judge success by what is actually in the field, not by each add's return
     // value: an add can time out after it already landed, and a reviewer who was
