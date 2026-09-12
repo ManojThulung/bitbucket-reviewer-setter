@@ -33,6 +33,12 @@ const CHIP_REMOVE_SELECTOR = [
 
 let applying = false;
 
+// Inline "remove everyone" button: danger red, with a darker shade for the failed state
+// so it stays distinguishable from the idle colour.
+const CLEAR_LABEL = 'Remove all';
+const CLEAR_RED = '#de350b';
+const CLEAR_RED_DARK = '#bf2600';
+
 const observers = [];
 let dead = false;
 
@@ -50,7 +56,7 @@ function teardown() {
     dead = true;
     observers.forEach(o => o.disconnect());
     clearTimeout(inlineTimer);
-    document.querySelectorAll('.sr-apply-btn, .sr-group-select, .sr-add-btn, .sr-toast')
+    document.querySelectorAll('.sr-apply-btn, .sr-clear-btn, .sr-group-select, .sr-add-btn, .sr-toast')
         .forEach(el => el.remove());
     console.info('[SR] extension was reloaded — refresh this page to re-enable');
 }
@@ -338,6 +344,8 @@ async function maybeAutoApply() {
     // Let Bitbucket finish loading its own default reviewers before touching them
     (async () => {
         await waitForChipsToSettle();
+        // A manual Clear during the settle window takes precedence over auto-apply
+        if (autoApplyState !== 'running') return;
 
         const state = await getGroupsState();
         if (!state) { autoApplyState = 'done'; return; }
@@ -448,12 +456,15 @@ function findReviewersLabel() {
 async function ensureInlineApplyButton() {
     let btn = document.querySelector('.sr-apply-btn');
     let sel = document.querySelector('.sr-group-select');
+    let clr = document.querySelector('.sr-clear-btn');
     if (btn && !btn.isConnected) btn = null;
     if (sel && !sel.isConnected) sel = null;
-    if (!isCreatePrPage()) { btn?.remove(); sel?.remove(); return; }
+    if (clr && !clr.isConnected) clr = null;
+    const removeAll = () => { btn?.remove(); sel?.remove(); clr?.remove(); };
+    if (!isCreatePrPage()) { removeAll(); return; }
 
     const label = findReviewersLabel();
-    if (!label) { btn?.remove(); sel?.remove(); return; }
+    if (!label) { removeAll(); return; }
 
     if (!sel) {
         sel = document.createElement('select');
@@ -493,8 +504,40 @@ async function ensureInlineApplyButton() {
         `;
         btn.addEventListener('click', onInlineApply);
     }
+    if (!clr) {
+        clr = document.createElement('button');
+        clr.className = 'sr-clear-btn';
+        clr.type = 'button';
+        clr.title = 'Remove every reviewer from this pull request';
+        // Destructive action, so it carries the danger colour rather than sitting
+        // quietly next to Apply
+        clr.style.cssText = `
+            margin-left: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+            font-weight: 500;
+            background: ${CLEAR_RED};
+            color: white;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            vertical-align: middle;
+        `;
+        clr.addEventListener('click', onInlineClear);
+    }
+    // Order: Reviewers label → group select → Apply → Clear
     if (sel.previousElementSibling !== label) label.insertAdjacentElement('afterend', sel);
     if (btn.previousElementSibling !== sel) sel.insertAdjacentElement('afterend', btn);
+    if (clr.previousElementSibling !== btn) btn.insertAdjacentElement('afterend', clr);
+
+    // Only meaningful when there is something to remove
+    if (!clr.dataset.busy) {
+        const hasChips = chipLabels().length > 0;
+        clr.textContent = CLEAR_LABEL;
+        clr.disabled = !hasChips;
+        clr.style.opacity = hasChips ? '1' : '0.5';
+        clr.style.cursor = hasChips ? 'pointer' : 'default';
+    }
 
     const state = await getGroupsStateCached();
     if (!state) return;
@@ -523,6 +566,46 @@ async function ensureInlineApplyButton() {
     btn.disabled = empty;
     btn.style.opacity = empty ? '0.5' : '1';
     btn.style.cursor = empty ? 'default' : 'pointer';
+}
+
+// Remove every reviewer from the field, without applying a group
+async function onInlineClear() {
+    const clr = document.querySelector('.sr-clear-btn');
+    if (!clr || clr.dataset.busy || applying) return;
+    if (!chipLabels().length) return;
+
+    clr.dataset.busy = '1';
+    clr.disabled = true;
+    clr.textContent = 'Removing…';
+
+    // Same suspension the apply path uses: stops "+ Add" injection and the reset
+    // watcher from reacting to the chips we are about to remove.
+    applying = true;
+    document.querySelectorAll('.sr-add-btn').forEach(b => b.remove());
+    try {
+        await removeAllReviewers();
+        // A manual clear has to stick. Marking auto-apply done (and forgetting what we
+        // applied) stops it refilling the field a moment later; a target-branch change
+        // still re-arms it, which is the one case where refilling is right.
+        autoApplyState = 'done';
+        appliedNames = null;
+        const left = chipLabels().length;
+        clr.textContent = left ? '✗ Failed' : '✓ Removed';
+        clr.style.background = left ? CLEAR_RED_DARK : '#36b37e';
+    } catch (err) {
+        console.warn('[SR] remove all failed:', err);
+        clr.textContent = '✗ Failed';
+        clr.style.background = CLEAR_RED_DARK;
+    } finally {
+        applying = false;
+    }
+
+    setTimeout(() => {
+        delete clr.dataset.busy;
+        clr.disabled = false;
+        clr.style.background = CLEAR_RED;
+        ensureInlineApplyButton();
+    }, 2000);
 }
 
 // Apply the active group straight from the page
