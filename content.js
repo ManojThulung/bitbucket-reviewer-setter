@@ -154,11 +154,18 @@ function isPrPage() {
 }
 
 // --- Reading who is currently a reviewer -------------------------------------
-// The two pages represent it completely differently: the create form uses
-// react-select chips, an open PR uses sidebar rows. Everything downstream goes
-// through currentReviewerNames()/reviewerCount() so it doesn't have to care.
+// Two UI shapes exist: react-select chips and sidebar-style rows. Bitbucket moves
+// pages between them, so the shape is read from the DOM, not guessed from the URL.
+// Everything downstream goes through currentReviewerNames()/reviewerCount().
 
 const PR_REMOVE_SELECTOR = '[data-testid="remove-reviewer-button"]';
+const ADD_REVIEWER_SELECTOR = '[data-testid="add-reviewer-container"]';
+
+// Rows UI if any row is on screen; an open PR always uses it (stray tags elsewhere
+// on that page must never be read as chips)
+function usesReviewerRows() {
+  return isExistingPrPage() || !!document.querySelector(PR_REMOVE_SELECTOR);
+}
 
 // Each remove button's parent is its reviewer's row
 function prReviewerRows() {
@@ -183,7 +190,7 @@ function prRowName(row) {
 }
 
 function currentReviewerNames() {
-  if (isExistingPrPage())
+  if (usesReviewerRows())
     return prReviewerRows().map(prRowName).filter(Boolean);
   return chipLabels()
     .map((c) => normName(c.textContent))
@@ -191,7 +198,7 @@ function currentReviewerNames() {
 }
 
 function reviewerCount() {
-  return isExistingPrPage() ? prReviewerRows().length : chipLabels().length;
+  return usesReviewerRows() ? prReviewerRows().length : chipLabels().length;
 }
 
 // True only for the Reviewers listbox, not branch/other dropdowns
@@ -295,36 +302,162 @@ function scheduleInlineRefresh() {
   }, 300);
 }
 
-// Bitbucket's reviewer input specifically — branch selectors are react-select too
-// and mount earlier, so a generic input[id^="react-select-"] check fires far too soon.
-function findReviewerInputEl() {
+// --- Finding Bitbucket's reviewer search box ----------------------------------
+// Branch selectors are react-select too and mount earlier, so a generic
+// input[id^="react-select-"] check is never enough. Bitbucket renames this input
+// between releases, so several independent strategies are tried. Whatever is found
+// gets marked with SR_INPUT_ATTR: main-world reads the mark, so both worlds always
+// type into the same element, and the mark outlives the chips we use to find it.
+
+const SR_INPUT_ATTR = "data-sr-reviewer-input";
+const INPUT_CANDIDATES =
+  'input[role="combobox"], input[id^="react-select-"], input[type="text"], input[type="search"], input:not([type])';
+
+function usableInput(el) {
+  return (
+    el?.tagName === "INPUT" &&
+    el.type !== "hidden" &&
+    el.isConnected &&
+    !el.closest(".sr-bar")
+  );
+}
+
+// Text of the elements an aria-labelledby / aria-describedby attribute points at
+function ariaRefText(el, attr) {
+  return (el.getAttribute(attr) || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent || "")
+    .join(" ");
+}
+
+// First usable input inside root that comes after `marker` in document order — the
+// title/description inputs sit above the Reviewers label and must not win
+function firstInputAfter(root, marker) {
+  return [...root.querySelectorAll(INPUT_CANDIDATES)].find(
+    (i) =>
+      usableInput(i) &&
+      marker.compareDocumentPosition(i) & Node.DOCUMENT_POSITION_FOLLOWING
+  );
+}
+
+function locateReviewerInput() {
   // 1. The known react-select instance id
   const byId = document.querySelector(
     "#react-select-BitbucketPullRequestReviewers-input"
   );
-  if (byId) return byId;
+  if (usableInput(byId)) return byId;
 
-  // 2. Any react-select input whose id mentions "review"
-  const byPattern = [
-    ...document.querySelectorAll('input[id^="react-select-"]'),
-  ].find((i) => /review/i.test(i.id));
-  if (byPattern) return byPattern;
+  const inputs = [...document.querySelectorAll(INPUT_CANDIDATES)].filter(
+    usableInput
+  );
 
-  // 3. Structural: the text input nearest the "Reviewers" label. Bitbucket renames
-  //    these ids between releases, and without this fallback the auto-apply gate
-  //    fails silently forever while manual apply (which has its own finder) works.
+  // 2. An input whose id, accessible name, description or placeholder says "review"
+  const byText = inputs.find((i) =>
+    /review/i.test(
+      [
+        i.id,
+        i.getAttribute("aria-label"),
+        i.placeholder,
+        ariaRefText(i, "aria-labelledby"),
+        ariaRefText(i, "aria-describedby"),
+      ].join(" ")
+    )
+  );
+  if (byText) return byText;
+
+  // 3. <label for="…">Reviewers</label> → the element it labels
+  const forLabel = [...document.querySelectorAll("label[for]")].find(
+    (l) =>
+      /^\s*reviewers?\b/i.test(l.textContent) &&
+      l.textContent.trim().length < 40
+  );
+  if (forLabel) {
+    const target = document.getElementById(forLabel.htmlFor);
+    if (usableInput(target)) return target;
+    const inner = target?.querySelector(INPUT_CANDIDATES);
+    if (usableInput(inner)) return inner;
+  }
+
+  // 4. The input living in the same select control as the reviewer chips. Never
+  //    climb past the field holding the Reviewers label: above it sit the branch
+  //    selectors and the title input, and typing names into those is far worse
+  //    than reporting "not found".
+  const chip = document.querySelector(CHIP_SELECTOR);
+  if (chip) {
+    const label = findReviewersLabel();
+    let el = chip.parentElement;
+    for (let i = 0; i < 8 && el; i++) {
+      const cand = [...el.querySelectorAll(INPUT_CANDIDATES)].find(usableInput);
+      if (cand) return cand;
+      if (label ? el.contains(label) : i >= 3) break;
+      el = el.parentElement;
+    }
+  }
+
+  // 5. Previously found — survives the chips being cleared
+  const marked = document.querySelector(`[${SR_INPUT_ATTR}]`);
+  if (usableInput(marked)) return marked;
+
+  // 6. Structural: the nearest input after the "Reviewers" label
   const label = findReviewersLabel();
   if (label) {
     let el = label.parentElement;
     for (let i = 0; i < 6 && el; i++) {
-      const cand = el.querySelector(
-        'input[role="combobox"], input[id^="react-select-"], input[type="text"], input:not([type])'
-      );
+      const cand = firstInputAfter(el, label);
       if (cand) return cand;
       el = el.parentElement;
     }
   }
-  return null;
+
+  // 7. The rows UI keeps its search box inside the "Add reviewer" container
+  const inAdd = document.querySelector(`${ADD_REVIEWER_SELECTOR} input`);
+  return usableInput(inAdd) ? inAdd : null;
+}
+
+function findReviewerInputEl() {
+  const input = locateReviewerInput();
+  if (input && !input.hasAttribute(SR_INPUT_ATTR)) {
+    document
+      .querySelectorAll(`[${SR_INPUT_ATTR}]`)
+      .forEach((el) => el.removeAttribute(SR_INPUT_ATTR));
+    input.setAttribute(SR_INPUT_ATTR, "1");
+  }
+  return input;
+}
+
+// Everything needed to fix the finder when Bitbucket changes the field again:
+// the label, the markup around it (classes stripped) and every candidate input.
+function describeReviewerField() {
+  const label = findReviewersLabel();
+  let field = label?.parentElement;
+  for (let i = 0; i < 3 && field && field.childElementCount < 2; i++) {
+    field = field.parentElement;
+  }
+  const copy = field?.cloneNode(true);
+  copy?.querySelectorAll(".sr-bar").forEach((el) => el.remove());
+  const html = (copy?.outerHTML || "(no Reviewers label found)")
+    .replace(/\s(class|style)="[^"]*"/g, "")
+    .replace(/<svg[\s\S]*?<\/svg>/g, "<svg/>")
+    .slice(0, 3000);
+  const inputs = [...document.querySelectorAll("input")]
+    .filter((i) => i.type !== "hidden")
+    .slice(0, 25)
+    .map((i) =>
+      [
+        `id=${i.id || "-"}`,
+        `type=${i.getAttribute("type") || "-"}`,
+        `role=${i.getAttribute("role") || "-"}`,
+        `aria-label=${i.getAttribute("aria-label") || "-"}`,
+        `labelledby=${ariaRefText(i, "aria-labelledby").trim() || "-"}`,
+        `placeholder=${i.placeholder || "-"}`,
+      ].join(" ")
+    );
+  return [
+    `label: ${label ? label.outerHTML.slice(0, 200) : "none"}`,
+    `inputs:\n  ${inputs.join("\n  ") || "none"}`,
+    `field html:\n${html}`,
+  ].join("\n");
 }
 
 // Auto-apply the active group once per Create PR page visit (opt-in, off by default).
@@ -425,18 +558,18 @@ async function maybeAutoApply() {
   // null = preference not read yet (primed at startup); false = switched off
   if (autoApplyPref !== true) return;
 
-  // The field counts as ready if the label is there and we can find either the input
-  // or existing chips — main-world has its own input finder, so a miss here must not
-  // block us. All checks stay synchronous: claiming the lock after an await races.
-  const label = findReviewersLabel();
+  // The field counts as ready once it's on screen and we can find either the input
+  // or existing reviewers — main-world has its own input finder, so a miss here must
+  // not block us. All checks stay synchronous: claiming the lock after an await races.
+  const field = findControlsAnchor();
   const input = findReviewerInputEl();
-  const chips = chipLabels().length;
-  if (!label || (!input && !chips)) {
+  const count = reviewerCount();
+  if (!field || (!input && !count)) {
     // Never fail silently — a blocked gate used to be invisible
     if (Date.now() - gateLoggedAt > 10000) {
       gateLoggedAt = Date.now();
       console.info(
-        `[SR] auto-apply waiting for the reviewers field — label=${!!label} input=${!!input} chips=${chips}`
+        `[SR] auto-apply waiting for the reviewers field — field=${!!field} input=${!!input} reviewers=${count}`
       );
     }
     return;
@@ -568,50 +701,122 @@ function showToast(message, undoSnapshot) {
   document.body.appendChild(toast);
 }
 
-// Leaf element whose text is exactly "Reviewers"
+// Text from an element's own text nodes, ignoring child elements
+function ownText(el) {
+  return [...el.childNodes]
+    .filter((n) => n.nodeType === Node.TEXT_NODE)
+    .map((n) => n.textContent)
+    .join("")
+    .trim();
+}
+
+// The "Reviewers" field label. Exact leaf text first; then a label whose own text
+// is "Reviewers" but also holds a required marker or info icon.
 function findReviewersLabel() {
-  return [...document.querySelectorAll("label, h2, h3, h4, span, div")].find(
-    (el) =>
-      el.childElementCount === 0 &&
-      /^reviewers?$/i.test(el.textContent.trim()) &&
-      !el.closest('[role="listbox"]')
+  const els = [
+    ...document.querySelectorAll("label, legend, h2, h3, h4, span, div"),
+  ];
+  const outside = (el) => !el.closest('[role="listbox"], .sr-bar');
+  // Cheap checks first: textContent on a big container is expensive, and this runs
+  // on every refresh tick
+  return (
+    els.find(
+      (el) =>
+        el.childElementCount === 0 &&
+        /^reviewers?$/i.test(el.textContent.trim()) &&
+        outside(el)
+    ) ||
+    els.find(
+      (el) =>
+        el.childElementCount > 0 &&
+        /^reviewers?\s*\*?$/i.test(ownText(el)) &&
+        el.textContent.trim().length < 40 &&
+        outside(el)
+    )
   );
 }
 
-// Where the control bar goes, which differs per page shape.
-// Create PR: inline, right after the "Reviewers" field label.
-// Open PR: as a block above the reviewers section header in the sidebar.
-function findControlsAnchor() {
-  if (isCreatePrPage()) {
-    const label = findReviewersLabel();
-    return label ? { el: label, position: "afterend" } : null;
-  }
-
-  // The sidebar heading reads "<n> reviewers", so it never matches the exact-text
-  // check the create page uses. Find it, then climb to the row that also holds the
-  // collapse toggle — that whole row is what we sit above.
-  const h2 = [...document.querySelectorAll("h2")].find(
+// Sidebar-style section header ("<n> reviewers" + collapse toggle)
+function findReviewersSectionHeader() {
+  const h2 = [...document.querySelectorAll("h2, h3")].find(
     (h) =>
       /\breviewers?\b/i.test(h.textContent) && h.textContent.trim().length < 40
   );
-  if (h2) {
-    let header = h2.parentElement;
-    for (let i = 0; i < 4 && header; i++) {
-      if (
-        header.querySelector('[aria-label="collapse"], [aria-label="expand"]')
-      ) {
-        return { el: header, position: "beforebegin" };
-      }
-      header = header.parentElement;
+  if (!h2) return null;
+  // Climb to the row that also holds the collapse toggle — that whole row is what
+  // we sit above.
+  let header = h2.parentElement;
+  for (let i = 0; i < 4 && header; i++) {
+    if (header.querySelector('[aria-label="collapse"], [aria-label="expand"]')) {
+      return header;
     }
-    return { el: h2, position: "beforebegin" };
+    header = header.parentElement;
   }
+  return h2;
+}
 
-  // Fallback: above the panel holding the rows and the "Add reviewer" control
-  const panel = document
-    .querySelector('[data-testid="add-reviewer-container"]')
-    ?.closest(".panel-content");
-  return panel ? { el: panel, position: "beforebegin" } : null;
+// Where the control bar goes. Tried in order on both pages, since Bitbucket swaps
+// which reviewer UI each page uses:
+//   form label   → inline, beside the label (wide form)
+//   rows section → stacked block above the header (narrow column)
+function findControlsAnchor() {
+  // The add-reviewer container marks the rows UI even before any row exists
+  const rowsUi =
+    usesReviewerRows() || !!document.querySelector(ADD_REVIEWER_SELECTOR);
+  const label = !isExistingPrPage() && !rowsUi && findReviewersLabel();
+  if (label) return { el: label, position: "afterend", layout: "inline" };
+
+  const header = findReviewersSectionHeader();
+  if (header) return { el: header, position: "beforebegin", layout: "stack" };
+
+  // Above the panel holding the rows and the "Add reviewer" control
+  const add = document.querySelector(ADD_REVIEWER_SELECTOR);
+  const panel = add?.closest(".panel-content") || add?.parentElement;
+  if (panel) return { el: panel, position: "beforebegin", layout: "stack" };
+
+  // Rows UI with no recognisable header: the label is still better than nothing
+  const lateLabel = !isExistingPrPage() && findReviewersLabel();
+  return lateLabel
+    ? { el: lateLabel, position: "afterend", layout: "inline" }
+    : null;
+}
+
+// On a PR page with no recognisable reviewers field, say what was looked for —
+// throttled, and only after the page has had time to render. This is what turns
+// "the buttons vanished" into something diagnosable from the console.
+let missingSince = 0; // when the field went missing on this page; 0 = present
+let missingPath = "";
+let missingLoggedAt = 0;
+function logMissingField() {
+  const now = Date.now();
+  if (!missingSince || missingPath !== location.pathname) {
+    missingSince = now;
+    missingPath = location.pathname;
+  }
+  if (now - missingSince < 4000 || now - missingLoggedAt < 15000) return;
+  missingLoggedAt = now;
+  console.info(
+    "[SR] reviewers field not found —",
+    `label=${!!findReviewersLabel()}`,
+    `header=${!!findReviewersSectionHeader()}`,
+    `addContainer=${!!document.querySelector(ADD_REVIEWER_SELECTOR)}`,
+    `input=${findReviewerInputEl()?.id || !!findReviewerInputEl()}`,
+    `rows=${prReviewerRows().length}`,
+    `chips=${document.querySelectorAll(CHIP_SELECTOR).length}`
+  );
+}
+
+// Write only real changes. Assigning textContent always swaps in a new text node —
+// a DOM mutation even when the text is identical — and that re-fired our own page
+// observer, which refreshed again 300ms later: an endless loop on every page.
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+function setStyle(el, prop, value) {
+  if (el.style[prop] !== value) el.style[prop] = value;
+}
+function setDisabled(el, value) {
+  if (el.disabled !== value) el.disabled = value;
 }
 
 // Keep the group selector + Apply + Remove all bar attached to the reviewers field
@@ -637,18 +842,24 @@ async function ensureInlineApplyButton() {
   const anchor = findControlsAnchor();
   if (!anchor) {
     removeAll();
+    logMissingField();
     return;
   }
+  missingSince = 0;
 
+  let created = false; // a fresh element needs the layout styles below
   if (!bar) {
     bar = document.createElement("span");
     bar.className = "sr-bar";
+    created = true;
   }
   if (!row) {
     row = document.createElement("span");
     row.className = "sr-btn-row";
+    created = true;
   }
   if (!sel) {
+    created = true;
     sel = document.createElement("select");
     sel.className = "sr-group-select";
     sel.title = "Active reviewer group";
@@ -670,6 +881,7 @@ async function ensureInlineApplyButton() {
     );
   }
   if (!btn) {
+    created = true;
     btn = document.createElement("button");
     btn.className = "sr-apply-btn";
     btn.type = "button";
@@ -687,6 +899,7 @@ async function ensureInlineApplyButton() {
     btn.addEventListener("click", onInlineApply);
   }
   if (!clr) {
+    created = true;
     clr = document.createElement("button");
     clr.className = "sr-clear-btn";
     clr.type = "button";
@@ -712,9 +925,11 @@ async function ensureInlineApplyButton() {
   if (btn.parentElement !== row) row.appendChild(btn);
   if (clr.parentElement !== row) row.appendChild(clr);
 
-  // Layout is re-applied every pass, not just at creation, so an SPA move between
-  // the create form and a PR page picks up the right shape.
-  if (isCreatePrPage()) {
+  // Layout follows the anchor, so an SPA move between the create form and a PR page
+  // picks up the right shape. Re-applied only when it changes (see setText).
+  if (!created && bar.dataset.layout === anchor.layout) {
+    // already laid out for this anchor
+  } else if (anchor.layout === "inline") {
     // Wide form: everything on one line beside the Reviewers label
     bar.style.cssText =
       "display:inline-flex; align-items:center; gap:6px; vertical-align:middle; margin:0 0 0 8px;";
@@ -734,6 +949,7 @@ async function ensureInlineApplyButton() {
     btn.style.flex = "1";
     clr.style.flex = "1";
   }
+  bar.dataset.layout = anchor.layout;
 
   // Re-attach if React re-rendered the anchor out from under us
   if (!bar.isConnected || bar.parentElement !== anchor.el.parentElement) {
@@ -743,10 +959,10 @@ async function ensureInlineApplyButton() {
   // Only meaningful when there is something to remove
   if (!clr.dataset.busy && !clr.dataset.armed) {
     const hasChips = reviewerCount() > 0;
-    clr.textContent = CLEAR_LABEL;
-    clr.disabled = !hasChips;
-    clr.style.opacity = hasChips ? "1" : "0.5";
-    clr.style.cursor = hasChips ? "pointer" : "default";
+    setText(clr, CLEAR_LABEL);
+    setDisabled(clr, !hasChips);
+    setStyle(clr, "opacity", hasChips ? "1" : "0.5");
+    setStyle(clr, "cursor", hasChips ? "pointer" : "default");
   }
 
   const state = await getGroupsStateCached();
@@ -774,11 +990,11 @@ async function ensureInlineApplyButton() {
   }
 
   if (btn.dataset.busy) return; // don't clobber Applying/result feedback
-  btn.textContent = "Apply";
+  setText(btn, "Apply");
   const empty = group.reviewers.length === 0;
-  btn.disabled = empty;
-  btn.style.opacity = empty ? "0.5" : "1";
-  btn.style.cursor = empty ? "default" : "pointer";
+  setDisabled(btn, empty);
+  setStyle(btn, "opacity", empty ? "0.5" : "1");
+  setStyle(btn, "cursor", empty ? "default" : "pointer");
 }
 
 // Remove every reviewer from the field, without applying a group
@@ -885,11 +1101,20 @@ function pruneListboxObservers() {
   }
 }
 
-const dropdownObserver = new MutationObserver(() => {
+// Our own controls changing (button labels, toast text) is never a reason to refresh
+const OWN_UI = ".sr-bar, .sr-toast";
+function isOwnMutation(record) {
+  const t = record.target;
+  const el = t.nodeType === Node.ELEMENT_NODE ? t : t.parentElement;
+  return !!el?.closest?.(OWN_UI);
+}
+
+const dropdownObserver = new MutationObserver((records) => {
   if (!extensionAlive()) {
     teardown();
     return;
   }
+  if (records.every(isOwnMutation)) return;
   scheduleInlineRefresh();
   // Stay out of the way while we're driving the field ourselves
   if (!isPrPage() || applying) return;
@@ -1028,7 +1253,7 @@ function injectAddButtons(listbox) {
   });
 }
 
-// Handle popup messages; Apply only allowed on the Create PR page
+// Handle popup messages; Apply only allowed on a pull request page
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.action === "status") {
     sendResponse({
@@ -1042,8 +1267,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!isPrPage()) {
     sendResponse({
       ok: false,
-      error:
-        "Open a Create Pull Request page first (URL contains /pull-requests/new).",
+      error: "Open a pull request (new or existing) first.",
     });
     return;
   }
@@ -1074,13 +1298,39 @@ async function applyReviewers(reviewers) {
   document.querySelectorAll(".sr-add-btn").forEach((b) => b.remove());
   const t0 = Date.now();
   try {
+    // Find the search box BEFORE touching anything: removing everyone and then
+    // discovering we can't add anybody leaves the PR with no reviewers at all.
+    // Looking now, while the chips still exist, also lets the chip-based strategy
+    // find (and mark) the input.
+    if (!findReviewerInputEl()) {
+      console.warn(
+        "[SR] reviewer search box not found — nothing was changed. Please share this:\n" +
+          describeReviewerField()
+      );
+      throw new Error(
+        "Couldn't find Bitbucket's reviewer search box — nothing was changed."
+      );
+    }
+
     // Clear the field FIRST. react-select hides already-selected people from its
     // search results, so anything left behind can never be re-selected — we'd wait
     // out the full timeout for an option that cannot render.
     await removeAllReviewers();
 
     for (const reviewer of reviewers) {
-      await addReviewer(reviewer);
+      findReviewerInputEl(); // keep the mark on the right element for main-world
+      const result = await addReviewer(reviewer);
+      if (result?.reason === "reviewer input not found") {
+        // Every remaining add would fail the same way — stop now, not after
+        // waiting out each one
+        console.warn(
+          "[SR] reviewer search box disappeared after clearing. Please share this:\n" +
+            describeReviewerField()
+        );
+        throw new Error(
+          "Bitbucket's reviewer search box disappeared — reload the page and try again."
+        );
+      }
     }
 
     // On an open PR each add is a server round-trip and its sidebar row only appears
@@ -1177,7 +1427,7 @@ function findRemoveControl(label) {
 // The next reviewer's remove control, whichever page shape we're on. `skip` lets the
 // caller move past one that isn't responding.
 function nextRemoveControl(skip = 0) {
-  if (isExistingPrPage()) {
+  if (usesReviewerRows()) {
     const btns = document.querySelectorAll(PR_REMOVE_SELECTOR);
     return btns.length ? btns[Math.min(skip, btns.length - 1)] : null;
   }
@@ -1251,8 +1501,8 @@ async function removeAllReviewers() {
     }
   }
 
-  // Backspace only clears react-select chips; an open PR's sidebar ignores it
-  if (reviewerCount() && !isExistingPrPage()) await clearWithBackspace();
+  // Backspace only clears react-select chips; the rows UI ignores it
+  if (reviewerCount() && !usesReviewerRows()) await clearWithBackspace();
 
   const left = reviewerCount();
   if (left) {
@@ -1269,9 +1519,10 @@ async function addReviewer(reviewer) {
   const result = await askMainWorld("sr-add-reviewer", { reviewer }, 13000);
   if (!result?.ok) {
     console.warn("[SR] addReviewer failed:", reviewer.name, result);
+    if (result?.reason === "reviewer input not found") return result;
   }
   await delay(400); // let React render the new chip
-  return !!result?.ok;
+  return result;
 }
 
 function delay(ms) {

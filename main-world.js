@@ -181,6 +181,11 @@
     );
     if (input) return input;
 
+    // content.js runs a much broader search (aria names, label[for], the chips'
+    // own select control…) and marks what it finds, so both worlds use one element
+    const marked = document.querySelector("input[data-sr-reviewer-input]");
+    if (marked?.isConnected) return marked;
+
     const byId = [
       ...document.querySelectorAll('input[id^="react-select-"]'),
     ].find((i) => /review/i.test(i.id));
@@ -196,7 +201,11 @@
       );
       if (candidate) return candidate;
     }
-    return null;
+
+    // The rows UI keeps its search box inside the "Add reviewer" container
+    return document.querySelector(
+      '[data-testid="add-reviewer-container"] input'
+    );
   }
 
   // Type into a React-controlled input via the native setter. Clearing first matters
