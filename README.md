@@ -1,4 +1,4 @@
-# Bitbucket Reviewer Setter
+# Reviewer Groups for Bitbucket
 
 Chrome extension (Manifest V3) that saves your preferred Bitbucket PR reviewers and applies them to any new pull request in one click — no more manually swapping default reviewers.
 
