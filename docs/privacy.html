@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy Policy · Reviewer Groups for Bitbucket</title>
+  <meta name="description" content="Privacy policy for the Reviewer Groups for Bitbucket Chrome extension. All data stays in your browser.">
+  <style>
+    :root {
+      --bg: #ffffff;
+      --surface: #f6f5fd;
+      --text: #1f1d2b;
+      --muted: #5b5870;
+      --border: #e4e2f0;
+      --accent: #534ab7;
+      --accent-text: #3c3489;
+      --ok: #0f6e56;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #15141c;
+        --surface: #1f1d2b;
+        --text: #ecebf5;
+        --muted: #a8a5bd;
+        --border: #2f2c40;
+        --accent: #7f77dd;
+        --accent-text: #afa9ec;
+        --ok: #5dcaa5;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 48px 16px 64px; }
+    header { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+    header svg { width: 48px; height: 48px; flex-shrink: 0; }
+    h1 { font-size: 28px; line-height: 1.25; margin: 0; }
+    .product { margin: 0; color: var(--muted); font-size: 15px; }
+    .updated { color: var(--muted); font-size: 14px; margin: 20px 0 28px; }
+    h2 { font-size: 19px; margin: 36px 0 8px; }
+    p, li { color: var(--text); }
+    ul { padding-left: 22px; }
+    li { margin: 6px 0; }
+    a { color: var(--accent-text); }
+    .summary {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 0 10px 10px 0;
+      padding: 16px 20px;
+    }
+    .summary p { margin: 0 0 8px; font-weight: 600; }
+    .summary ul { margin: 0; }
+    .summary li::marker { color: var(--ok); }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 15px; margin-top: 8px; }
+    th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+    code { font-size: 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+    footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <svg viewBox="0 0 128 128" aria-hidden="true">
+      <rect width="128" height="128" rx="28" fill="#534AB7"/>
+      <circle cx="80" cy="44" r="15" fill="#AFA9EC"/>
+      <path d="M54 96c0-17 11-28 26-28s26 11 26 28z" fill="#AFA9EC"/>
+      <circle cx="50" cy="52" r="17" fill="#ffffff"/>
+      <path d="M20 108c0-20 13-32 30-32s30 12 30 32z" fill="#ffffff"/>
+      <circle cx="96" cy="96" r="22" fill="#1D9E75" stroke="#534AB7" stroke-width="6"/>
+      <path d="M86 96l7 7 13-14" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <h1>Privacy Policy</h1>
+      <p class="product">Reviewer Groups for Bitbucket — Chrome extension</p>
+    </div>
+  </header>
+
+  <p class="updated">Last updated: November 22, 2026</p>
+
+  <div class="summary">
+    <p>In short</p>
+    <ul>
+      <li>Everything the extension saves stays in your own browser.</li>
+      <li>Nothing is sent to the developer or to any third party.</li>
+      <li>No analytics, no tracking, no ads, and no accounts.</li>
+    </ul>
+  </div>
+
+  <h2>What the extension does</h2>
+  <p>
+    Reviewer Groups for Bitbucket lets you save groups of pull request reviewers and apply a
+    group to a pull request on <code>bitbucket.org</code> in one click, replacing the
+    repository's default reviewers. It only runs on <code>bitbucket.org</code> pages.
+  </p>
+
+  <h2>Information stored on your device</h2>
+  <p>
+    The extension uses Chrome's local extension storage (<code>chrome.storage.local</code>).
+    This data lives only in your browser profile on your computer. It is not synced to other
+    devices and is never transmitted to the developer.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>What</th><th>Why</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Reviewer groups you create: each group's name, and for each reviewer you add, their display name, Bitbucket account ID and profile picture address</td>
+          <td>To show your groups and add those people as reviewers</td>
+        </tr>
+        <tr>
+          <td>Which group is currently selected</td>
+          <td>So the right group is applied</td>
+        </tr>
+        <tr>
+          <td>Your auto-apply setting (on or off)</td>
+          <td>To apply your group automatically when you open a new pull request, if you turned it on</td>
+        </tr>
+        <tr>
+          <td>The workspace and repository name (for example <code>team/project</code>) where you last applied each group</td>
+          <td>To pre-select the same group next time you open a pull request in that repository</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Reviewer details are saved only when you choose to add someone by clicking
+    <strong>+ Add</strong> in Bitbucket's own reviewer search.
+  </p>
+
+  <h2>Information read on Bitbucket pages</h2>
+  <p>
+    To do its job, the extension reads parts of the Bitbucket page you're viewing: the reviewers
+    currently on the pull request, the reviewer search box and its results, and the page address
+    (to recognise pull request pages and the repository name). When you search for a reviewer, it
+    also reads the search results Bitbucket's page has already received, so it can capture the
+    details of a person you choose to save. This happens inside your browser only. The extension
+    doesn't read your code, pull request content, comments, or any other Bitbucket data, and it
+    doesn't record your browsing.
+  </p>
+
+  <h2>Network requests</h2>
+  <p>
+    The extension makes no network requests of its own and has no server. The only time it loads
+    anything is when the popup shows a saved reviewer's profile picture: the image is loaded from
+    the address Bitbucket provided (Atlassian's servers), exactly as Bitbucket itself loads it.
+    If the picture can't be loaded, a coloured initial is shown instead.
+  </p>
+
+  <h2>Sharing and selling</h2>
+  <p>
+    The developer doesn't collect your data, so there is nothing to share or sell. No data is
+    transferred to third parties, used for advertising, used to determine creditworthiness, or
+    used for any purpose unrelated to the extension's single purpose described above.
+  </p>
+  <p>
+    The use of information complies with the
+    <a href="https://developer.chrome.com/docs/webstore/program-policies/policies">Chrome Web Store User Data Policy</a>,
+    including the Limited Use requirements.
+  </p>
+
+  <h2>Permissions</h2>
+  <ul>
+    <li><strong>Storage</strong> — to save your groups and settings locally, as described above.</li>
+    <li><strong>Access to bitbucket.org</strong> — to show the Apply and Remove all controls on pull request pages and to add or remove reviewers there for you.</li>
+  </ul>
+
+  <h2>Deleting your data</h2>
+  <p>
+    You can delete a group or clear a group's reviewers at any time from the extension's popup.
+    Removing the extension from Chrome deletes everything it has stored.
+  </p>
+
+  <h2>Children</h2>
+  <p>The extension is a developer tool and is not directed at children.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>
+    If the extension's handling of data changes, this page will be updated and the date at the top
+    will change. The full history is available in the project's public repository.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    Questions or concerns? Open an issue on
+    <a href="https://github.com/ManojThulung/bitbucket-reviewer-setter/issues">GitHub</a>.
+  </p>
+
+  <footer>
+    Reviewer Groups for Bitbucket is an independent project and is not affiliated with, endorsed
+    by, or sponsored by Atlassian. Bitbucket is a trademark of Atlassian.
+  </footer>
+</main>
+</body>
+</html>
